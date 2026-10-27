@@ -1071,3 +1071,225 @@ guardar(fig, "5_2_online_retail")
 # un año completo (por ejemplo con *Online Retail II*).
 
 # %% [markdown]
+# ---
+# ## Parte 6 (opcional): ¿le gana una regresión logística al BG/NBD?
+#
+# ### 6.1 La comparación ingenua
+
+# %%
+X6 = np.c_[x, tx, T]
+logit = lambda: make_pipeline(StandardScaler(), LogisticRegression(C=np.inf, max_iter=5000))
+filas, oof_ultimo = [], None
+for seed in range(20):
+    skf = StratifiedKFold(5, shuffle=True, random_state=seed)
+    oof = np.zeros(len(Z))
+    for tr, te in skf.split(X6, Z):
+        m = logit().fit(X6[tr], Z[tr])
+        oof[te] = m.predict_proba(X6[te])[:, 1]
+        filas.append({"seed": seed, "AUC logit": roc_auc_score(Z[te], oof[te]),
+                      "AUC BG/NBD": roc_auc_score(Z[te], pz[te]),
+                      "Brier logit": brier_score_loss(Z[te], oof[te]),
+                      "Brier BG/NBD": brier_score_loss(Z[te], pz[te])})
+    oof_ultimo = oof
+cv61 = pd.DataFrame(filas)
+tabla(cv61.drop(columns="seed").agg(["mean", "std"]).T.round(4), "6_1_cv")
+
+# %%
+m61 = logit().fit(X6, Z)
+coef = pd.Series(m61[-1].coef_[0], index=["x", "t_x", "T"])
+print("Coeficientes (variables estandarizadas):")
+print(coef.round(3), f"\nintercepto {m61[-1].intercept_[0]:.3f}")
+cal61 = calib_deciles(oof_ultimo, Z)
+fig, ax = plt.subplots(figsize=(5.5, 5))
+ax.plot([0, 1], [0, 1], "k:", lw=1)
+ax.plot(cal45["predicho"], cal45["real"], "C0o-", label="BG/NBD P(Z=1)")
+ax.plot(cal61["predicho"], cal61["real"], "C2s--", label="logística (fuera de fold)")
+ax.set(xlabel="predicho", ylabel="real", title="6.1 Calibración, horizonte 39 semanas")
+ax.legend()
+guardar(fig, "6_1_calibracion")
+
+# %% [markdown]
+# **6.1 Respuesta.** Con validación cruzada estratificada de 5 *folds*
+# repetida con 20 semillas, la logística **gana**: AUC 0.779 ± 0.021 vs
+# 0.757 ± 0.022 del BG/NBD, y Brier 0.156 vs 0.161. Su calibración fuera de
+# *fold* también es mejor (está casi sobre la diagonal, mientras que el
+# BG/NBD subestima los deciles altos).
+#
+# Coeficientes (variables estandarizadas): **$t_x$ es la variable que más
+# pesa (+0.80)**, luego $x$ (+0.47), ambas positivas: más reciente y más
+# frecuente, más probable que compre. $T$ entra con signo **negativo**
+# (−0.23): a igual $x$ y $t_x$, un cliente más viejo lleva más tiempo en
+# silencio relativo, lo cual es mala señal. Es la misma lógica de "recencia
+# relativa a la edad" que el BG/NBD codifica con $(\alpha+T)/(\alpha+t_x)$.
+#
+# **6.2 Respuesta. No fue justa.** La logística aprendió con las etiquetas
+# del *holdout* de los otros clientes: vio cómo se comportó *esta misma
+# cohorte* entre octubre de 1997 y junio de 1998, incluyendo el nivel de
+# compra de ese periodo, su estacionalidad y la duración exacta de 39
+# semanas. El BG/NBD nunca vio nada posterior al 30 de septiembre. El 30 de
+# septiembre de 1997 esas etiquetas **no existían**; las únicas etiquetas
+# disponibles eran de periodos pasados (por ejemplo, "¿compró entre julio y
+# septiembre?" usando características de antes de julio). Es la misma
+# **fuga de información** (*data leakage*) que en la tarea de series de
+# tiempo cuando se hace validación cruzada aleatoria sobre una serie: los
+# *folds* mezclan el futuro con el pasado y el modelo "ve" información que
+# en la vida real no tendría al momento de pronosticar.
+
+# %% [markdown]
+# ### 6.3 La versión honesta
+#
+# El 30 de septiembre sí podríamos haber entrenado la logística, pero con una
+# ventana del pasado: características $(x, t_x, T)$ calculadas con datos hasta
+# el 1 de julio de 1997 y etiqueta "compró entre el 2 de julio y el 30 de
+# septiembre" (13 semanas). Luego aplicamos ese modelo a $(x, t_x, T)$ del 30
+# de septiembre para predecir quién compra en las primeras 13 semanas del
+# *holdout*. Repetimos con 26 semanas (características al 1 de abril).
+
+# %%
+def honesta(corte, horizonte_sem):
+    corte = pd.Timestamp(corte)
+    fin_et = data.CDNOW_FIN_CAL
+    fin_pred = data.CDNOW_FIN_CAL + pd.Timedelta(days=7 * horizonte_sem)
+    tr = data.rfm(trans, corte, fin_et)
+    te = data.rfm(trans, data.CDNOW_FIN_CAL, fin_pred)
+    ytr = (tr["x_star"] >= 1).astype(int).to_numpy()
+    yte = (te["x_star"] >= 1).astype(int).to_numpy()
+    m = logit().fit(tr[["x", "tx", "T"]].to_numpy(), ytr)
+    p_log = m.predict_proba(te[["x", "tx", "T"]].to_numpy())[:, 1]
+    p_bg = bgnbd.p_buy(horizonte_sem, P, te["x"].to_numpy(), te["tx"].to_numpy(), te["T"].to_numpy())
+    p_61 = m61.predict_proba(te[["x", "tx", "T"]].to_numpy())[:, 1]
+    res = pd.DataFrame({
+        "AUC": [roc_auc_score(yte, p_log), roc_auc_score(yte, p_bg), roc_auc_score(yte, p_61)],
+        "Brier": [brier_score_loss(yte, p_log), brier_score_loss(yte, p_bg), brier_score_loss(yte, p_61)],
+        "prob. media": [p_log.mean(), p_bg.mean(), p_61.mean()],
+        "tasa real": yte.mean(),
+    }, index=[f"logística honesta ({horizonte_sem} sem)", f"BG/NBD τ={horizonte_sem}",
+              "logística 6.1 (entrenada a 39 sem)"])
+    rangos = pd.DataFrame({"entrenamiento": [tr["T"].min(), tr["T"].max(), tr["x"].mean(), ytr.mean()],
+                           "aplicación (30-sep)": [te["T"].min(), te["T"].max(), te["x"].mean(), yte.mean()]},
+                          index=["T mín", "T máx", "x medio", "tasa de la etiqueta"])
+    return res, rangos, (yte, p_log, p_bg, p_61), m
+
+
+res13w, rangos13, curvas13, m13 = honesta("1997-07-01", 13)
+res26w, rangos26, curvas26, m26 = honesta("1997-04-01", 26)
+print("Horizonte 13 semanas"); print(res13w.round(4)); print(rangos13.round(2))
+print("\nHorizonte 26 semanas"); print(res26w.round(4)); print(rangos26.round(2))
+tabla(pd.concat([res13w, res26w]).round(4), "6_3_honesta")
+
+# %%
+fig, ax = plt.subplots(1, 2, figsize=(12, 4.6))
+for k, (curvas, hz) in enumerate([(curvas13, 13), (curvas26, 26)]):
+    yte, p_log, p_bg, p_61 = curvas
+    ax[k].plot([0, 1], [0, 1], "k:", lw=1)
+    for p_, nom, est_ in [(p_bg, f"BG/NBD τ={hz}", "C0o-"), (p_log, "logística honesta", "C2s--"),
+                          (p_61, "logística 6.1 tal cual", "C3^-.")]:
+        c = calib_deciles(p_, yte)
+        ax[k].plot(c["predicho"], c["real"], est_, label=nom)
+    ax[k].set(title=f"Compra en las primeras {hz} semanas del holdout", xlabel="predicho", ylabel="real")
+    ax[k].legend(fontsize=8)
+guardar(fig, "6_3_6_4_calibracion")
+
+# %% [markdown]
+# **6.3 Respuesta.**
+#
+# * **13 semanas.** La logística honesta ordena un poco mejor (AUC 0.792 vs
+#   0.785), pero el BG/NBD tiene **mejor Brier** (0.110 vs 0.112) y una
+#   probabilidad media más cercana a la real (15.4% vs 13.8%; real 17.1%).
+#   Prácticamente un empate, con ventaja del BG/NBD en niveles.
+# * **26 semanas.** De nuevo la logística ordena algo mejor (0.785 vs 0.762),
+#   pero sus probabilidades están peor calibradas: Brier 0.156 vs 0.148 del
+#   BG/NBD, probabilidad media 20.0% vs 22.0% (real 25.1%). En la gráfica se
+#   ve que la logística empuja demasiado a los extremos: a muchos clientes
+#   les da ~2% cuando compra el 10%, y al decil más alto 91% cuando compra el
+#   75%.
+# * **¿Qué le estamos pidiendo a la logística? Extrapolar.** Para el
+#   horizonte de 13 semanas se entrenó con $T$ entre 14 y 26 semanas y se
+#   aplica a clientes con $T$ entre 27 y 39: **ningún** cliente de aplicación
+#   está en el rango de entrenamiento. Para 26 semanas es peor: se entrenó con
+#   clientes de 1 a 13 semanas de edad (casi todos con $x=0$, cuando la
+#   cohorte apenas se formaba y su tasa de compra era 31%) y se aplica a
+#   clientes de 27 a 39 semanas, cuya tasa es 25%. La logística supone que la
+#   relación entre $(x,t_x,T)$ y la compra es la misma en otra etapa de la
+#   vida de la cohorte, y extiende linealmente (en el *logit*) el efecto de
+#   $T$ fuera de donde lo vio. El BG/NBD, en cambio, tiene una historia
+#   explícita de cómo cambian las cosas con la edad del cliente (muerte
+#   acumulada, posterior de $\lambda$ que se actualiza con $T$), y por eso
+#   extrapola en el tiempo de forma natural.
+#
+# ### 6.4 Cambiar la pregunta
+#
+# **6.4 Respuesta.** Con el BG/NBD basta cambiar $\tau=39$ por $\tau=13$ en
+# la fórmula de 4.3. Con la logística de 6.1 habría que **reentrenar con
+# etiquetas de 13 semanas** — que, igual que en 6.2, no existen el 30 de
+# septiembre sin recurrir a una ventana pasada como en 6.3. Usándola tal
+# cual: el orden casi no cambia (AUC 0.791, el orden de 39 semanas sirve
+# para 13), pero las **probabilidades quedan infladas**: promedian 29.0% (la
+# tasa de 39 semanas con la que se entrenó) cuando la tasa real a 13 semanas
+# es 17.1%. En la gráfica de calibración (triángulos rojos, panel izquierdo)
+# toda la curva queda muy por debajo de la diagonal: el decil más alto
+# predice 80% y compra el 62%. Su Brier (0.128) es claramente peor que el del
+# BG/NBD (0.110). La logística respondió una pregunta (39 semanas) y no sabe
+# responder otra; el horizonte está "horneado" en sus etiquetas.
+#
+# ### 6.5 Veredicto
+#
+# Usaríamos una **regresión logística** cuando la pregunta sea fija y
+# repetida (siempre el mismo horizonte), cuando importe sobre todo **ordenar**
+# clientes (a quién llamar primero), cuando existan **etiquetas de un periodo
+# anterior comparable** (misma etapa de vida de la base, misma temporada) y
+# cuando queramos meter otras variables (monto, canal, demografía) que el
+# BTYD no usa; con esas condiciones ordena igual o un poco mejor. Usaríamos el
+# **BG/NBD** cuando necesitemos **niveles** y no solo un orden (cuántos
+# clientes van a comprar, cuántas compras habrá, el CLV), cuando el horizonte
+# cambie (13, 26, 39 semanas con el mismo ajuste), cuando haya que
+# pronosticar el **total de la base** de abajo hacia arriba como en la Parte 3,
+# y sobre todo cuando **no haya etiquetas de un periodo anterior** (una
+# cohorte nueva, o al inicio de la relación): el BG/NBD se calibra solo con la
+# historia de compras y no necesita que nadie le diga qué pasó después. La
+# comparación de 6.1 favorecía a la logística solo porque le dejamos ver el
+# futuro; en la versión honesta (6.3) ordenan parecido y el BG/NBD da mejores
+# probabilidades. Y si hay buenas etiquetas, lo mejor de ambos mundos es
+# usar $P(Z=1)$ y $E[Y(\tau)]$ del BG/NBD como variables dentro de la
+# logística.
+
+# %% [markdown]
+# ---
+# ## Conclusiones
+#
+# 1. **El modelo está bien programado:** la verosimilitud a mano recupera
+#    los parámetros de datos simulados (Parte 1) y reproduce al decimal los
+#    estimados del artículo en CDNOW, su subpronóstico acumulado de 4% y sus
+#    esperanzas condicionales (Partes 2–3).
+# 2. **Bottom-up vs top-down:** con solo $(x,t_x,T)$ y la fecha de primera
+#    compra, el BG/NBD pronostica el *holdout* mejor que casi todos los
+#    métodos de series de tiempo, sin escoger ventanas, porque sabe que la
+#    cohorte está cerrada y que los clientes se van muriendo.
+# 3. **"Vivo" no es "va a comprar":** el supuesto de que solo se muere tras
+#    una recompra hace que $P(\text{vivo})=1$ para los clientes de una sola
+#    compra y que, como clasificador, sea peor que el azar. La probabilidad
+#    correcta, $P(Z=1)$, ordena tan bien como la recencia y además está en
+#    unidades de probabilidad. El MBG/NBD cambia una sola pieza y arregla
+#    $P(\text{vivo})$ sin cambiar casi nada de $P(Z=1)$.
+# 4. **El BG/NBD es una elección, no "el" modelo:** en Online Retail
+#    (mayoristas, calibración corta, sin cohorte real) el componente de muerte
+#    desaparece y el modelo colapsa al NBD; y como no tiene estacionalidad, no
+#    ve venir noviembre.
+# 5. **Logística vs BG/NBD:** la logística solo "gana" cuando se le deja ver
+#    el futuro; en una comparación honesta ordenan parecido, y el BG/NBD
+#    calibra mejor, cambia de horizonte gratis y no necesita etiquetas.
+#
+# ### Referencias
+#
+# * Fader, Hardie y Lee (2005). "Counting Your Customers" the Easy Way: An
+#   Alternative to the Pareto/NBD Model. *Marketing Science* 24(2):275–284.
+# * Schmittlein, Morrison y Colombo (1987). Counting Your Customers.
+#   *Management Science* 33(1):1–24.
+# * Batislam, Denizel y Filiztekin (2007). Empirical validation and
+#   comparison of models for customer base analysis. *IJRM* 24(3):201–209.
+# * Fader y Hardie (2009). Probability Models for Customer-Base Analysis.
+#   *Journal of Interactive Marketing* 23(1):61–69.
+# * Hyndman y Athanasopoulos (2018). *Forecasting: Principles and Practice*,
+#   2a ed., §10.3–10.4.
+# * Datos: B. Hardie, CDNOW_sample (brucehardie.com/datasets); D. Chen,
+#   Online Retail, UCI ML Repository.
