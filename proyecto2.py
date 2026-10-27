@@ -431,3 +431,197 @@ tabla(pd.DataFrame({
 # mala especificación. Con datos reales conviene preferir el bootstrap.
 
 # %% [markdown]
+# ---
+# ## Parte 3: pronóstico de abajo hacia arriba y de arriba hacia abajo
+#
+# ### 3.1 *Bottom-up*
+#
+# El cliente $i$ hizo su primera compra en la semana $s_i$ (días/7). Las
+# compras repetidas esperadas de toda la cohorte hasta la semana $k$ son
+# $\sum_i \mathbb{E}[X(k - s_i)]$ (con $\mathbb{E}[X(t)] = 0$ si $t \le 0$).
+
+# %%
+trans = trans.merge(d[["primera"]], left_on="id", right_index=True)
+trans["repetida"] = trans["fecha"] > trans["primera"]
+trans["sem"] = trans["dia"] // 7 + 1          # semana 1..78
+semanas = np.arange(1, 79)
+real_sem = (trans[trans["repetida"]].groupby("sem").size()
+            .reindex(semanas, fill_value=0).astype(float))
+real_acum = real_sem.cumsum()
+t0 = d["t0"].to_numpy()
+bu_acum = pd.Series([bgnbd.expected_x(k - t0, P).sum() for k in semanas], index=semanas)
+bu_sem = bu_acum.diff().fillna(bu_acum.iloc[0])
+
+hold_real = real_acum[78] - real_acum[39]
+hold_bu = bu_acum[78] - bu_acum[39]
+print(f"Compras repetidas en el holdout (sem 40-78): real = {hold_real:.0f}, "
+      f"BG/NBD = {hold_bu:.1f}  (error {100 * (hold_bu / hold_real - 1):+.1f}%)")
+print(f"Acumulado a la semana 78: real = {real_acum[78]:.0f}, BG/NBD = {bu_acum[78]:.1f}")
+
+fig, ax = plt.subplots(1, 2, figsize=(13, 4))
+ax[0].plot(semanas, real_acum, "k", label="real")
+ax[0].plot(semanas, bu_acum, "C0--", label="BG/NBD (bottom-up)")
+ax[0].axvline(39, color="gray", ls=":")
+ax[0].set(title="Compras repetidas acumuladas", xlabel="semana")
+ax[0].legend()
+ax[1].plot(semanas, real_sem, "k", label="real")
+ax[1].plot(semanas, bu_sem, "C0--", label="BG/NBD")
+ax[1].axvline(39, color="gray", ls=":")
+ax[1].set(title="Compras repetidas por semana", xlabel="semana")
+ax[1].legend()
+guardar(fig, "3_1_bottom_up")
+
+# %% [markdown]
+# **3.1 Respuesta.** La curva acumulada del BG/NBD sigue muy de cerca a la
+# real en calibración y se va quedando un poco abajo en el *holdout*. A la
+# semana 78 pronostica 4,166 compras repetidas acumuladas contra 4,339 reales,
+# un **subpronóstico de 4.0%, exactamente lo que reporta el artículo**
+# ("under-forecasting by ... 4%"). Medido solo en el *holdout* (semanas
+# 40–78) el modelo pronostica 1,664 contra 1,882 reales (−11.6%): el error
+# relativo se ve más grande porque se calcula sobre un total más chico. En la
+# serie semanal se ve por qué: la serie real tiene picos (semana 45, inicios
+# de noviembre; semanas 49–50, la temporada navideña de diciembre; semanas
+# 61–65, marzo de 1998) que una curva suave y sin estacionalidad no puede
+# reproducir, y entre las semanas 45 y 66 la serie real se mantiene casi
+# siempre por encima del modelo: la caída real es algo más lenta que la
+# predicha.
+
+# %% [markdown]
+# ### 3.2 *Top-down*
+#
+# Ahora solo vemos la serie semanal agregada de las semanas 1–39 y
+# pronosticamos 40–78 con métodos de la tarea de series de tiempo. Los que
+# dependen de una ventana se prueban con varias.
+
+# %%
+y = real_sem.loc[1:39].to_numpy()
+h = 39
+semanas_h = np.arange(40, 79)
+
+
+def tendencia(y, desde):
+    t = np.arange(desde, 40)
+    m, c = np.polyfit(t, y[desde - 1:], 1)
+    return np.maximum(m * semanas_h + c, 0)
+
+
+metodos = {
+    "Media histórica (sem 1-39)": np.full(h, y.mean()),
+    "Media histórica (sem 13-39)": np.full(h, y[12:].mean()),
+    "Naive (última semana)": np.full(h, y[-1]),
+    "Media últimas 4 sem": np.full(h, y[-4:].mean()),
+    "Media últimas 13 sem": np.full(h, y[-13:].mean()),
+    "Tendencia lineal (sem 1-39)": tendencia(y, 1),
+    "Tendencia lineal (sem 13-39)": tendencia(y, 13),
+    "Tendencia lineal (sem 26-39)": tendencia(y, 26),
+    "Drift (sem 13-39)": np.maximum(y[-1] + (y[-1] - y[12]) / (39 - 13) * np.arange(1, h + 1), 0),
+    "BG/NBD (bottom-up)": bu_sem.loc[40:78].to_numpy(),
+}
+fig, ax = plt.subplots(figsize=(12, 4.5))
+ax.plot(semanas, real_sem, "k", lw=2, label="real")
+for i, (nombre, f) in enumerate(metodos.items()):
+    estilo = "-" if "BG" in nombre else "--"
+    ax.plot(semanas_h, f, estilo, lw=2.5 if "BG" in nombre else 1.2, label=nombre)
+ax.axvline(39.5, color="gray", ls=":")
+ax.set(title="Pronóstico top-down vs bottom-up de compras repetidas semanales", xlabel="semana")
+ax.legend(fontsize=7, ncol=2)
+guardar(fig, "3_2_top_down")
+
+# %% [markdown]
+# ### 3.3 Comparación
+
+# %%
+real_h = real_sem.loc[40:78].to_numpy()
+comp = pd.DataFrame({
+    "total holdout": {k: f.sum() for k, f in metodos.items()},
+    "error %": {k: 100 * (f.sum() / real_h.sum() - 1) for k, f in metodos.items()},
+    "MAE semanal": {k: np.mean(np.abs(f - real_h)) for k, f in metodos.items()},
+})
+comp.loc["(real)"] = [real_h.sum(), 0, 0]
+tabla(comp.sort_values("MAE semanal").round(2), "3_3_comparacion")
+
+# %%
+fig, ax = plt.subplots(figsize=(10, 3.6))
+ax.bar(semanas[:20], real_sem.iloc[:20], color="gray", label="compras repetidas (real)")
+ax2 = ax.twinx()
+nuevos = d.groupby(np.floor(d["t0"]).astype(int) + 1).size().reindex(semanas[:20], fill_value=0)
+ax2.plot(semanas[:20], nuevos.cumsum(), "C3o-", label="clientes adquiridos (acum.)")
+ax.set(xlabel="semana", ylabel="compras repetidas", title="Las primeras semanas: la cohorte se está formando")
+ax2.set_ylabel("clientes en la cohorte")
+fig.legend(loc="upper left", bbox_to_anchor=(0.08, 0.88))
+guardar(fig, "3_3_primeras_semanas")
+
+# %% [markdown]
+# **3.3 Respuesta.**
+#
+# * **¿Quién gana?** Ex post, una sola variante top-down — la tendencia lineal
+#   ajustada en las semanas 26–39 — tiene un MAE semanal ligeramente menor
+#   (9.3 vs 9.8) y un error total menor (−7% vs −12%) que el BG/NBD. Pero el
+#   BG/NBD es el segundo, y le gana a **todos** los demás métodos top-down.
+# * **Sensibilidad a la ventana:** enorme. La misma tendencia lineal da +29%
+#   con la ventana 1–39, −50% con la 13–39 y −7% con la 26–39; la media
+#   histórica da +31%, la naive +28%, el drift −24%. Elegir la ventana
+#   "ganadora" sabiendo el resultado es hacer trampa: el 30 de septiembre no
+#   había forma de saber cuál de estas variantes, que van de −50% a +32%,
+#   escoger. El BG/NBD no tiene ventanas que escoger y su error está dentro
+#   de lo que se puede esperar con 2,357 clientes.
+# * **Las primeras 12 semanas:** la cohorte **se está formando**. Los
+#   clientes llegaron entre la semana 1 y la 12 (gráfica de arriba), así que
+#   el número de clientes "en riesgo" de recomprar crece semana a semana y las
+#   compras repetidas suben mecánicamente. A partir de la semana 13 la cohorte
+#   está cerrada: ya no entra nadie y los que están se van muriendo, por eso la
+#   serie baja. Un método top-down solo ve una serie que sube y luego baja; no
+#   puede saber que la subida fue por adquisición, que la adquisición se
+#   detuvo, ni cuántos clientes siguen vivos. El bottom-up usa la fecha de
+#   primera compra de cada cliente y lo sabe por construcción.
+
+# %% [markdown]
+# ### 3.4 Por cliente: esperanzas condicionales
+
+# %%
+ey39 = bgnbd.conditional_expected(39, P, x, tx, T)
+grupo = np.where(x >= 7, "7+", x.astype(int).astype(str))
+cond = (pd.DataFrame({"x": grupo, "E[Y(39)]": ey39, "x* real": xs})
+        .groupby("x").agg(clientes=("x* real", "size"),
+                          **{"BG/NBD E[Y(39)]": ("E[Y(39)]", "mean"),
+                             "real x*": ("x* real", "mean")}))
+cond = cond.loc[["0", "1", "2", "3", "4", "5", "6", "7+"]]
+cond["error %"] = 100 * (cond["BG/NBD E[Y(39)]"] / cond["real x*"] - 1)
+print(f"Suma de E[Y(39)] sobre clientes = {ey39.sum():.1f} (real {xs.sum():.0f})")
+print(f"Correlación entre x* real y E[Y(39)] por cliente = {np.corrcoef(xs, ey39)[0, 1]:.3f} "
+      f"(el artículo reporta 0.626)")
+print(f"Grupo x=0: {xs[x == 0].sum():.0f} compras en el holdout "
+      f"({100 * xs[x == 0].sum() / xs.sum():.0f}% del total)")
+tabla(cond.round(3), "3_4_condicional")
+
+# %%
+fig, ax = plt.subplots(figsize=(7, 4))
+ax.plot(cond.index, cond["real x*"], "ko-", label="real")
+ax.plot(cond.index, cond["BG/NBD E[Y(39)]"], "C0s--", label="BG/NBD")
+ax.set(xlabel="compras repetidas en calibración (x)", ylabel="compras promedio en holdout",
+       title="Esperanzas condicionales")
+ax.legend()
+guardar(fig, "3_4_condicional")
+
+# %% [markdown]
+# **3.4 Respuesta.** El modelo reproduce la forma creciente de la relación
+# (más compras pasadas, más compras futuras) y acierta muy bien en el gran
+# grupo $x=0$ (0.225 pronosticado vs 0.237 real; el artículo reporta 0.23 vs
+# 0.24) y en $x=3$ (1.52 vs 1.56, igual que en el artículo) y $7+$ (−3%).
+# Donde **más se equivoca es en $x=1$ y $x=2$** (−25% en ambos): el modelo
+# subestima a los clientes que recompraron una o dos veces; con $E[p]=0.25$
+# "mata" a demasiados de ellos tras su última compra. También subestima a
+# $x=4$ (−15%). Como casi todos los grupos quedan por debajo, el total (1,653)
+# queda 12% abajo. La correlación entre $x^*$ real y $E[Y(39)]$ por cliente es
+# 0.626, y el grupo $x=0$ hace 334 compras en el *holdout* (18% del total):
+# ambos números son idénticos a los del artículo. Que el modelo acierte en
+# el grupo silencioso es importante porque es el grupo más grande.
+#
+# **¿Esto lo puede hacer un top-down?** No. Un pronóstico top-down es de la
+# serie agregada; no tiene idea de qué clientes componen el total, así que no
+# puede decir cuánto va a comprar un cliente con $x=2$ comparado con uno con
+# $x=0$, ni asignar el pronóstico a individuos. A lo sumo podría repartir el
+# total proporcionalmente, lo cual supone que todos son iguales —
+# exactamente lo que la Parte 2 mostró que no es cierto.
+
+# %% [markdown]
