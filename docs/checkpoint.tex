@@ -1,0 +1,76 @@
+\documentclass[11pt]{article}
+\usepackage[spanish,es-noshorthands]{babel}
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage{amsmath,amssymb,booktabs,geometry}
+\geometry{margin=2.3cm}
+\title{Proyecto 2 --- \textit{Checkpoint}\\\large Derivaciones 1.1, 1.2 y 4.3, simulación 1.3 y estimados 2.1}
+\author{Análisis y Ciencia de Datos, Universidad del Istmo}
+\date{}
+\begin{document}
+\maketitle
+
+\section*{Supuestos del BG/NBD}
+(i) Mientras está activo, el cliente $i$ compra según un proceso de Poisson con tasa $\lambda_i$;
+(ii) $\lambda\sim\text{Gamma}(r,\alpha)$;
+(iii) después de cada compra (repetida) muere con probabilidad $p_i$;
+(iv) $p\sim\text{Beta}(a,b)$;
+(v) $\lambda_i\perp p_i$.
+Datos por cliente: $x$ compras repetidas en $(0,T]$, la última en $t_x$.
+
+\section*{1.1 Verosimilitud de un cliente}
+Fijemos $\lambda$ y $p$, y sean $t_1<\dots<t_x$ los momentos de las compras repetidas. Hay dos historias que producen los mismos datos.
+
+\paragraph{A: sigue vivo en $T$.} Los tiempos entre compras son exponenciales, así que la densidad de las $x$ compras es
+$\lambda e^{-\lambda t_1}\lambda e^{-\lambda(t_2-t_1)}\cdots\lambda e^{-\lambda(t_x-t_{x-1})}=\lambda^xe^{-\lambda t_x}$.
+Sobrevivió a las $x$ compras, $(1-p)^x$, y estando vivo no compró en $(t_x,T]$, $e^{-\lambda(T-t_x)}$:
+\[L_A=(1-p)^x\lambda^xe^{-\lambda T}.\]
+
+\paragraph{B: murió justo después de la $x$-ésima compra.} Misma densidad de compras $\lambda^xe^{-\lambda t_x}$; sobrevivió a $x-1$ compras y murió tras la última, $p(1-p)^{x-1}$; ya muerto, no comprar en $(t_x,T]$ tiene probabilidad 1:
+\[L_B=p(1-p)^{x-1}\lambda^xe^{-\lambda t_x}.\]
+Como son excluyentes,
+\[L(\lambda,p\mid x,t_x,T)=(1-p)^x\lambda^xe^{-\lambda T}+\delta_{x>0}\,p(1-p)^{x-1}\lambda^xe^{-\lambda t_x}.\]
+La historia B no existe si $x=0$: en el BG/NBD solo se puede morir justo después de una compra \emph{repetida}; sin recompras no hubo oportunidad de morir, y el cliente está vivo en $T$ por construcción. Solo aparecen $(x,t_x,T)$: son estadísticos suficientes.
+
+\section*{1.2 La mezcla}
+Con $g(\lambda)=\alpha^r\lambda^{r-1}e^{-\alpha\lambda}/\Gamma(r)$ y $f(p)=p^{a-1}(1-p)^{b-1}/B(a,b)$, y por (v), cada término se factoriza. Para $s\in\{T,t_x\}$:
+\[\int_0^\infty\lambda^xe^{-\lambda s}g(\lambda)\,d\lambda=\frac{\alpha^r}{\Gamma(r)}\int_0^\infty\lambda^{r+x-1}e^{-(\alpha+s)\lambda}d\lambda=\frac{\Gamma(r+x)\alpha^r}{\Gamma(r)}\frac{1}{(\alpha+s)^{r+x}},\]
+\[\int_0^1(1-p)^xf(p)\,dp=\frac{B(a,b+x)}{B(a,b)},\qquad\int_0^1p(1-p)^{x-1}f(p)\,dp=\frac{B(a+1,b+x-1)}{B(a,b)}.\]
+Por lo tanto
+\[L(r,\alpha,a,b\mid x,t_x,T)=\frac{\Gamma(r+x)\alpha^r}{\Gamma(r)}\left[\frac{B(a,b+x)}{B(a,b)}\frac{1}{(\alpha+T)^{r+x}}+\delta_{x>0}\frac{B(a+1,b+x-1)}{B(a,b)}\frac{1}{(\alpha+t_x)^{r+x}}\right].\]
+Para $x=0$, $L=(\alpha/(\alpha+T))^r$ no depende de $(a,b)$: los clientes sin recompras no informan sobre la muerte.
+Verificamos numéricamente la fórmula contra la integral de 1.1 por Monte Carlo ($4\times10^6$ sorteos): errores relativos $<4\times10^{-4}$.
+
+\section*{1.3 Simulación}
+$(r,\alpha,a,b)=(0.25,4,0.8,2.5)$, 2{,}357 clientes, $T\sim U(27,39)$, 50 semillas. Cada cliente compra con tiempos exponenciales de tasa $\lambda_i$ y tras cada recompra muere con probabilidad $p_i$. Estimación por máxima verosimilitud sobre log-parámetros (L-BFGS-B con cotas $[-10,10]$ desde 6 arranques, pulido con Nelder--Mead).
+
+\begin{center}
+\begin{tabular}{lrrrrr}
+\toprule
+ & verdadero & media & desv.\ est. & sesgo \% & CV \%\\\midrule
+$r$ & 0.25 & 0.254 & 0.010 & 1.4 & 4.0\\
+$\alpha$ & 4.0 & 4.048 & 0.274 & 1.2 & 6.9\\
+$a$ & 0.8 & 0.859 & 0.195 & 7.4 & 24.4\\
+$b$ & 2.5 & 2.747 & 0.727 & 9.9 & 29.1\\
+$a/(a+b)$ & 0.242 & 0.241 & 0.018 & $-0.8$ & 7.4\\\bottomrule
+\end{tabular}
+\end{center}
+Se recuperan los parámetros (cobertura de $\pm1.96$ d.e.\ entre 92\% y 96\%). $r$ y $\alpha$ se estiman mucho mejor que $a$ y $b$: el 57\% de los clientes simulados tiene $x=0$ y no aporta información sobre $(a,b)$, y la muerte solo se infiere del silencio $T-t_x$ de los recompradores. Además $\widehat a$ y $\widehat b$ están muy correlacionados (0.93): la media $a/(a+b)$ está bien identificada, la dispersión de la beta no.
+
+\section*{2.1 Estimados en CDNOW}
+\begin{center}
+\begin{tabular}{lrrrrr}
+\toprule
+ & $r$ & $\alpha$ & $a$ & $b$ & log-verosimilitud\\\midrule
+Nuestro & 0.2426 & 4.4136 & 0.7929 & 2.4259 & $-9582.43$\\
+Artículo & 0.243 & 4.414 & 0.793 & 2.426 & $-9582.4$\\\bottomrule
+\end{tabular}
+\end{center}
+
+\section*{4.3 La probabilidad de comprar}
+$Z=0$ si el cliente está muerto en $T$, o si está vivo y no compra en $(T,T+\tau]$. (1) Como solo se muere justo después de comprar, un vivo que no compra sigue vivo; cero compras es el evento Poisson con probabilidad $e^{-\lambda\tau}$. (2) La parte de $\lambda$ de la historia ``vivo'' es $\lambda^xe^{-\lambda T}$, así que $\lambda\mid\text{vivo}\sim\text{Gamma}(r+x,\alpha+T)$. (3) Mezclando,
+\[\mathbb{P}(\text{0 compras en }\tau\mid\text{vivo})=\left(\frac{\alpha+T}{\alpha+T+\tau}\right)^{r+x}
+\;\Longrightarrow\;
+\mathbb{P}(Z=1\mid x,t_x,T)=\mathbb{P}(\text{vivo}\mid x,t_x,T)\left[1-\left(\frac{\alpha+T}{\alpha+T+\tau}\right)^{r+x}\right].\]
+El mismo argumento vale para el MBG/NBD, que solo cambia $\mathbb{P}(\text{vivo})$.
+\end{document}
