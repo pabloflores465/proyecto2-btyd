@@ -817,3 +817,85 @@ guardar(fig, "4_5_calibracion_roc")
 # barata.
 
 # %% [markdown]
+# ### 4.6 Otro miembro de la familia: MBG/NBD
+
+# %%
+aj_m = mbgnbd.fit(x, tx, T)
+Pm = aj_m["params"]
+pa_m = mbgnbd.p_alive(Pm, x, tx, T)
+pz_m = mbgnbd.p_buy(39, Pm, x, tx, T)
+bu_m = pd.Series([mbgnbd.expected_x(k - t0, Pm).sum() for k in semanas], index=semanas)
+hold_bu_m = bu_m[78] - bu_m[39]
+cond_m = mbgnbd.conditional_expected(39, Pm, x, tx, T)
+res46 = pd.DataFrame({
+    "BG/NBD": {"r": P[0], "alpha": P[1], "a": P[2], "b": P[3], "log-verosimilitud": ajuste["loglik"],
+               "P(vivo) medio, x=0": palive[x == 0].mean(),
+               "AUC P(vivo)": auc_palive, "AUC P(Z=1)": roc_auc_score(Z, pz),
+               "Brier P(Z=1)": brier_m, "media P(Z=1)": pz.mean(),
+               "holdout total (bottom-up)": hold_bu, "holdout total (suma E[Y(39)])": ey39.sum()},
+    "MBG/NBD": {"r": Pm[0], "alpha": Pm[1], "a": Pm[2], "b": Pm[3], "log-verosimilitud": aj_m["loglik"],
+                "P(vivo) medio, x=0": pa_m[x == 0].mean(),
+                "AUC P(vivo)": roc_auc_score(Z, pa_m), "AUC P(Z=1)": roc_auc_score(Z, pz_m),
+                "Brier P(Z=1)": brier_score_loss(Z, pz_m), "media P(Z=1)": pz_m.mean(),
+                "holdout total (bottom-up)": hold_bu_m, "holdout total (suma E[Y(39)])": cond_m.sum()},
+})
+res46["real"] = np.nan
+res46.loc["media P(Z=1)", "real"] = Z.mean()
+res46.loc["holdout total (bottom-up)", "real"] = hold_real
+res46.loc["holdout total (suma E[Y(39)])", "real"] = xs.sum()
+tabla(res46.round(4), "4_6_mbgnbd")
+
+# %%
+fig, ax = plt.subplots(1, 2, figsize=(12, 4))
+bins = np.linspace(0, 1.0001, 41)
+ax[0].hist(palive[x == 0], bins=bins, alpha=0.7, label="BG/NBD (todos = 1)")
+ax[0].hist(pa_m[x == 0], bins=bins, alpha=0.7, label="MBG/NBD")
+ax[0].set(title="P(vivo) de los clientes con x = 0", xlabel="P(vivo)")
+ax[0].legend()
+cal_m = calib_deciles(pz_m, Z)
+ax[1].plot([0, 1], [0, 1], "k:", lw=1)
+ax[1].plot(cal45["predicho"], cal45["real"], "C0o-", label="BG/NBD")
+ax[1].plot(cal_m["predicho"], cal_m["real"], "C1s--", label="MBG/NBD")
+ax[1].set(title="Calibración de P(Z=1)", xlabel="predicho", ylabel="real")
+ax[1].legend()
+guardar(fig, "4_6_mbgnbd")
+print(f"Correlación de rangos (Spearman) entre P(Z=1) BG y MBG: {stats.spearmanr(pz, pz_m)[0]:.4f}")
+
+# %% [markdown]
+# **4.6 Respuesta.**
+#
+# * **Ajuste:** MBG/NBD $(r,\alpha,a,b)=(0.525, 6.18, 0.891, 1.614)$ con
+#   log-verosimilitud $-9582.14$, apenas 0.29 mejor que el BG/NBD (mismo
+#   número de parámetros): para fines prácticos, empatan. Los parámetros sí
+#   cambian bastante: como ahora los clientes pueden morir tras su primera
+#   compra, la beta pone más masa en $p$ alto ($E[p]=0.36$) y la gamma se
+#   vuelve menos dispersa ($r$ sube de 0.24 a 0.52).
+# * **$P(\text{vivo})$ para $x=0$:** pasa de 1 a **0.41 en promedio**. El
+#   MBG/NBD reconoce que alguien que compró una vez y nunca volvió bien pudo
+#   haberse ido justo después. Con eso el AUC de $P(\text{vivo})$ pasa de
+#   0.316 a 0.687: ya no está volteado.
+# * **$P(Z=1)$:** AUC 0.760 vs 0.757, Brier 0.1614 vs 0.1612; el orden de los
+#   clientes es casi el mismo (correlación de Spearman 0.977). La fórmula de
+#   4.3 **sigue valiendo** porque su derivación solo usó dos hechos que el
+#   MBG/NBD conserva: (1) la muerte solo ocurre justo después de una compra,
+#   así que un cliente vivo que no compra sigue vivo; y (2) dado que está
+#   vivo, la parte de $\lambda$ de la verosimilitud sigue siendo
+#   $\lambda^x e^{-\lambda T}$, así que la posterior es $\text{Gamma}(r+x,\alpha+T)$.
+#   Lo único que cambia es la $P(\text{vivo})$ que multiplica.
+# * **Total del *holdout*:** el MBG/NBD pronostica 1,572 (−16%), peor que el
+#   BG/NBD (1,664, −12%); su probabilidad media de compra también queda más
+#   lejos (24.0% vs 26.2%, real 29.0%).
+#
+# **¿Con cuál nos quedamos para decidir a quién mandar una promoción?** Para
+# esa decisión lo que importa es el **orden por $P(Z=1)$** (o por compras
+# esperadas), no $P(\text{vivo})$, y en eso los dos modelos son
+# prácticamente intercambiables. Desempatamos así: si el gerente va a ver un
+# "score de vida", usaríamos el **MBG/NBD**, porque su $P(\text{vivo})$ tiene
+# sentido para los clientes de una sola compra (decirle al gerente que el 60%
+# de su base está "viva con certeza" es engañoso). Si además hay que
+# presupuestar cuántas compras generará la campaña, el BG/NBD pronosticó
+# mejor los niveles en estos datos. Esa es la moraleja del enunciado: el
+# supuesto sobre *cuándo* se muere uno cambia mucho $P(\text{vivo})$ y poco
+# las decisiones que se toman con $P(Z=1)$.
+
+# %% [markdown]
