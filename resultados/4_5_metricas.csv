@@ -1,0 +1,6 @@
+,AUC,Brier
+P(Z=1) BG/NBD,0.7569,0.1612
+P(vivo) BG/NBD,0.3158,0.6083
+recencia t_x,0.7632,
+frecuencia x,0.7576,
+tasa base para todos,0.5,0.206

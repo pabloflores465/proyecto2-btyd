@@ -1,0 +1,5 @@
+,mean,std
+AUC logit,0.779,0.0212
+AUC BG/NBD,0.7569,0.0222
+Brier logit,0.1561,0.0073
+Brier BG/NBD,0.1612,0.0064

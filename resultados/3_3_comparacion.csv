@@ -1,0 +1,12 @@
+,total holdout,error %,MAE semanal
+(real),1882.0,0.0,0.0
+Tendencia lineal (sem 26-39),1748.4,-7.1,9.28
+BG/NBD (bottom-up),1664.14,-11.58,9.83
+Media últimas 4 sem,2125.5,12.94,12.27
+Media últimas 13 sem,2133.0,13.34,12.35
+Drift (sem 13-39),1428.0,-24.12,15.05
+Naive (última semana),2418.0,28.48,16.56
+Tendencia lineal (sem 1-39),2428.37,29.03,16.73
+Media histórica (sem 1-39),2457.0,30.55,17.31
+Media histórica (sem 13-39),2490.22,32.32,17.94
+Tendencia lineal (sem 13-39),945.51,-49.76,24.15
