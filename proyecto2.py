@@ -286,3 +286,148 @@ print(f"\nFracción media de clientes con x=0 en las simulaciones: {est['frac_x0
 # heterogeneidad en la muerte merecen más cautela.
 
 # %% [markdown]
+# ---
+# ## Parte 2: ajuste a CDNOW
+#
+# ### 2.1 Estimación
+
+# %%
+ajuste = bgnbd.fit(x, tx, T)
+P = ajuste["params"]
+r, alpha, a, b = P
+art = np.array([0.243, 4.414, 0.793, 2.426])
+tabla(pd.DataFrame({"nuestro": np.r_[P, ajuste["loglik"]],
+                    "artículo": np.r_[art, -9582.4]},
+                   index=["r", "alpha", "a", "b", "log-verosimilitud"]).round(4),
+      "2_1_estimados")
+
+# %% [markdown]
+# Arranques múltiples: todos los arranques razonables llegan al mismo óptimo.
+# Si alguno se queda en una cota (por ejemplo $a\approx 0$ o $b$ enorme) es un
+# optimizador perdido, no un estimado, y su log-verosimilitud lo delata.
+
+# %%
+pd.DataFrame([np.r_[p, l] for p, l in ajuste["runs"]],
+             columns=["r", "alpha", "a", "b", "loglik"]).round(4)
+
+# %% [markdown]
+# ### 2.2 Interpretación de los parámetros
+
+# %%
+media_lam = r / alpha
+media_p = a / (a + b)
+print(f"Tasa media de compra de un cliente activo  E[λ] = r/α = {media_lam:.4f} por semana "
+      f"= {52 * media_lam:.2f} por año")
+print(f"Desv. est. de λ = sqrt(r)/α = {np.sqrt(r) / alpha:.4f};  CV(λ) = 1/sqrt(r) = {1 / np.sqrt(r):.2f}")
+print(f"Mediana de λ = {stats.gamma(r, scale=1 / alpha).median():.5f} por semana")
+print(f"P(λ < 0.01/semana) = {stats.gamma(r, scale=1 / alpha).cdf(0.01):.3f}")
+print(f"Prob. media de morir tras una compra E[p] = a/(a+b) = {media_p:.4f}")
+print(f"Mediana de p = {stats.beta(a, b).median():.4f};  desv. est. de p = {stats.beta(a, b).std():.4f}")
+print(f"Vida esperada (en compras repetidas) de un cliente típico ~ 1/E[p] = {1 / media_p:.1f}")
+
+fig, ax = plt.subplots(1, 2, figsize=(12, 3.8))
+lg = np.linspace(1e-4, 0.4, 600)
+ax[0].plot(lg, stats.gamma(r, scale=1 / alpha).pdf(lg), color="C0")
+ax[0].axvline(media_lam, color="k", ls="--", label=f"media = {media_lam:.3f}")
+ax[0].set(title=f"λ ~ Gamma(r={r:.3f}, α={alpha:.3f})", xlabel="compras por semana",
+          ylim=(0, 40))
+ax[0].legend()
+pg = np.linspace(1e-4, 1 - 1e-4, 600)
+ax[1].plot(pg, stats.beta(a, b).pdf(pg), color="C3")
+ax[1].axvline(media_p, color="k", ls="--", label=f"media = {media_p:.3f}")
+ax[1].set(title=f"p ~ Beta(a={a:.3f}, b={b:.3f})", xlabel="prob. de morir tras una compra",
+          ylim=(0, 6))
+ax[1].legend()
+guardar(fig, "2_2_densidades")
+
+# %% [markdown]
+# **2.1 Respuesta.** Obtenemos $(r,\alpha,a,b)=(0.2426, 4.4136, 0.7929,
+# 2.4259)$ con log-verosimilitud $-9582.43$: idénticos al artículo (0.243,
+# 4.414, 0.793, 2.426; $-9582.4$) al redondeo. Cinco de seis arranques llegan
+# al mismo punto; el sexto se perdió en $a\to 0$, $b\to\infty$ con una
+# log-verosimilitud 181 unidades peor — exactamente el "optimizador perdido"
+# contra el que advierte el enunciado. Por eso siempre arrancamos desde varios
+# puntos y nos quedamos con el mejor.
+#
+# **2.2 Respuesta.**
+#
+# * **Tasa de compra de un cliente activo:** $E[\lambda]=r/\alpha=0.055$
+#   compras por semana, unas **2.9 compras repetidas al año**. Pero la media
+#   engaña: con $r=0.24<1$ la gamma tiene forma de "L", con moda en 0 y cola
+#   larga (CV = $1/\sqrt r$ = 2.0). La **mediana es 0.009** por semana (una
+#   compra cada ~2 años) y la mitad de los clientes tiene $\lambda<0.01$. Unos
+#   pocos clientes muy activos jalan la media hacia arriba.
+# * **Probabilidad de morir después de una compra:** $E[p]=a/(a+b)=0.246$. En
+#   promedio, uno de cada cuatro "se va" después de cada recompra, lo que da
+#   una vida esperada de unas 4 compras repetidas. Con $a=0.79<1$ la densidad
+#   de $p$ se dispara cerca de 0 (muchos clientes muy leales) pero tiene cola
+#   larga hacia 1 (clientes que casi seguro se van tras la siguiente compra);
+#   la desviación estándar (0.21) es casi igual a la media.
+# * **¿Qué tan parecidos son los clientes?** Muy poco. Ambas distribuciones
+#   están lejos de ser una punta alrededor de la media: hay muchísima
+#   heterogeneidad tanto en *cuánto* compran como en *cuánto duran*. Por eso un
+#   modelo que trata a todos igual (o la serie agregada) pierde información, y
+#   por eso tiene sentido hablar de "quién sigue vivo" cliente por cliente.
+
+# %% [markdown]
+# ### 2.3 Bono: error estándar por *bootstrap* sobre clientes
+#
+# Remuestreamos los 2,357 clientes con reemplazo 300 veces y reestimamos.
+# Como referencia agregamos también el error estándar asintótico (inversa del
+# hessiano numérico en log-parámetros, llevado a la escala original con el
+# método delta).
+
+# %%
+B = 300
+rng = np.random.default_rng(2024)
+boot = []
+for _ in range(B):
+    idx = rng.integers(0, len(x), len(x))
+    fb = bgnbd.fit(x[idx], tx[idx], T[idx], starts=[ajuste["logparams"], np.zeros(4)])
+    boot.append(fb["params"])
+boot = pd.DataFrame(boot, columns=["r", "alpha", "a", "b"])
+
+
+def hessiano(f, z, h=1e-4):
+    k = len(z)
+    H = np.zeros((k, k))
+    for i in range(k):
+        for j in range(k):
+            ei, ej = np.eye(k)[i] * h, np.eye(k)[j] * h
+            H[i, j] = (f(z + ei + ej) - f(z + ei - ej) - f(z - ei + ej) + f(z - ei - ej)) / (4 * h * h)
+    return H
+
+
+negll = lambda z: -bgnbd.loglik(np.exp(z), x, tx, T)
+cov_log = np.linalg.inv(hessiano(negll, ajuste["logparams"]))
+se_hess = P * np.sqrt(np.diag(cov_log))
+# desviación de la simulación 1.3 reescalada: CV de la simulación x estimado de CDNOW
+se_sim = (est[["r", "alpha", "a", "b"]].std() / VERDAD).to_numpy() * P
+tabla(pd.DataFrame({
+    "estimado": P,
+    "EE bootstrap": boot.std().to_numpy(),
+    "EE hessiano": se_hess,
+    "desv. simulación 1.3": est[["r", "alpha", "a", "b"]].std().to_numpy(),
+    "CV bootstrap %": 100 * boot.std().to_numpy() / P,
+    "CV simulación %": 100 * (est[["r", "alpha", "a", "b"]].std() / VERDAD).to_numpy(),
+    "IC 95% bootstrap": [f"[{boot[c].quantile(.025):.3f}, {boot[c].quantile(.975):.3f}]"
+                         for c in boot.columns],
+}, index=["r", "alpha", "a", "b"]).round(4), "2_3_bootstrap")
+
+# %% [markdown]
+# **2.3 Respuesta.** El *bootstrap* da errores estándar de 0.014 para $r$,
+# 0.45 para $\alpha$, 0.18 para $a$ y 0.71 para $b$. El patrón es el mismo de
+# la simulación 1.3: $r$ y $\alpha$ con CV de 6–10%, $a$ y $b$ con CV de
+# 22–29%. Para $a$ y $b$ los tres números (bootstrap, hessiano y la
+# dispersión de la simulación) prácticamente coinciden, lo que dice que la
+# simulación fue un buen ensayo del problema real.
+#
+# Para $r$ y sobre todo $\alpha$, el bootstrap es más grande que el hessiano
+# (0.45 vs 0.38) y que la dispersión simulada. El error estándar del hessiano
+# y la simulación suponen que **el modelo es el verdadero**; el bootstrap no.
+# Que el bootstrap sea mayor sugiere que en los datos reales hay variabilidad
+# en el proceso de compra que el BG/NBD no captura del todo (por ejemplo
+# compras más regulares o más "en racimos" que un Poisson), es decir, cierta
+# mala especificación. Con datos reales conviene preferir el bootstrap.
+
+# %% [markdown]
