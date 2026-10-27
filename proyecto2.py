@@ -625,3 +625,195 @@ guardar(fig, "3_4_condicional")
 # exactamente lo que la Parte 2 mostró que no es cierto.
 
 # %% [markdown]
+# ---
+# ## Parte 4: ¿quién sigue vivo?
+#
+# ### 4.1 P(vivo) como clasificador de $Z$
+
+# %%
+Z = (xs >= 1).astype(int)
+palive = bgnbd.p_alive(P, x, tx, T)
+print(f"Tasa base: P(Z=1) = {Z.mean():.4f}  ({Z.sum()} de {len(Z)} clientes compran en el holdout)")
+cm = confusion_matrix(Z, (palive >= 0.5).astype(int))
+print("\nMatriz de confusión (umbral 0.5), filas = real, columnas = predicho:")
+print(pd.DataFrame(cm, index=["Z=0", "Z=1"], columns=["pred 0", "pred 1"]))
+auc_palive = roc_auc_score(Z, palive)
+print(f"\nAUC de P(vivo) = {auc_palive:.4f}")
+print(f"Exactitud con umbral 0.5 = {np.trace(cm) / cm.sum():.3f}   vs. predecir siempre 0 = {1 - Z.mean():.3f}")
+
+# %% [markdown]
+# ### 4.2 ¿Por qué se ve raro?
+
+# %%
+print(f"P(vivo) para clientes con x=0: min = {palive[x == 0].min():.4f}, max = {palive[x == 0].max():.4f}")
+print(f"Clientes con x=0: {np.sum(x == 0)}; de ellos compraron en el holdout: {Z[x == 0].mean():.3f}")
+print(f"Clientes con x>0: {np.sum(x > 0)}; de ellos compraron en el holdout: {Z[x > 0].mean():.3f}")
+print(f"P(vivo) promedio en x>0: {palive[x > 0].mean():.3f}")
+print(f"AUC de P(vivo) solo entre clientes con x>0: {roc_auc_score(Z[x > 0], palive[x > 0]):.4f}")
+
+# %% [markdown]
+# **4.1 Respuesta.** La tasa base es 29.0%: 684 de los 2,357 clientes
+# compraron al menos una vez en el *holdout*. Usando $P(\text{vivo})\ge 0.5$
+# como regla, el modelo declara "vivos" a 1,964 clientes, de los cuales solo
+# 545 compran; la exactitud es 34%, muy por debajo del 71% que se obtiene
+# diciendo "nadie compra". El **AUC es 0.316, peor que tirar una moneda**: la
+# curva ROC queda debajo de la diagonal.
+#
+# **4.2 Respuesta.** La explicación está en la pieza de muerte del BG/NBD.
+# Para un cliente con $x=0$, $P(\text{vivo})=1$ *exactamente*: como solo se
+# puede morir justo después de una compra repetida, quien nunca recompró no
+# ha tenido oportunidad de morir (en la fórmula, el término con
+# $\delta_{x>0}$ desaparece y queda $[1+0]^{-1}=1$). Pero esos 1,411 clientes
+# son justamente los menos propensos a comprar: solo **13.7%** de ellos compró
+# en el *holdout*, contra 51.9% de los que tenían $x>0$. El clasificador pone
+# en el primer lugar del ranking, empatados con probabilidad 1, al grupo con
+# menor tasa de compra; eso es lo que voltea la ROC (el tramo recto largo de
+# la curva naranja es ese bloque de empates). Entre los clientes con $x>0$,
+# donde $P(\text{vivo})$ sí distingue, su AUC es 0.70.
+#
+# La lección: **"vivo" no es "va a comprar"**. Un cliente con $x=0$ puede
+# estar vivo y tener una $\lambda$ minúscula; para la pregunta "¿comprará?"
+# hay que combinar la probabilidad de estar vivo con la probabilidad de que,
+# estando vivo, compre en el horizonte.
+
+# %% [markdown]
+# ### 4.3 La probabilidad correcta
+#
+# $Z=0$ ocurre si (a) el cliente está muerto en $T$, o (b) está vivo en $T$ y
+# no compra en $(T, T+\tau]$. Entonces
+# $$\mathbb{P}(Z=1\mid x,t_x,T)=\mathbb{P}(\text{vivo}\mid x,t_x,T)\cdot\big[1-\mathbb{P}(\text{0 compras en }\tau\mid\text{vivo},x,t_x,T)\big].$$
+#
+# 1. **Un vivo que no compra sigue vivo.** En el BG/NBD solo se muere justo
+#    después de una compra; mientras no compre, no hay oportunidad de morir.
+#    Por eso "cero compras en $(T,T+\tau]$" para un cliente vivo es
+#    simplemente el evento de Poisson "cero llegadas en $\tau$", con
+#    probabilidad $e^{-\lambda\tau}$. (Si compra y luego muere, igual $Z=1$.)
+# 2. **Posterior de $\lambda$ dado que está vivo.** Por Bayes,
+#    $g(\lambda\mid\text{vivo},x,t_x,T)\propto g(\lambda)\,\mathbb{P}(\text{datos},\text{vivo}\mid\lambda)$.
+#    La parte de $\lambda$ en la historia "vivo" de 1.1 es $\lambda^x e^{-\lambda T}$
+#    (la parte $(1-p)^x$ no depende de $\lambda$ y por la independencia (v) se
+#    va en la constante). Entonces
+#    $g(\lambda\mid\cdot)\propto\lambda^{r-1}e^{-\alpha\lambda}\lambda^x e^{-\lambda T}=\lambda^{r+x-1}e^{-(\alpha+T)\lambda}$,
+#    es decir, $\lambda\mid\text{vivo}\sim\text{Gamma}(r+x,\alpha+T)$.
+# 3. **Mezcla gamma–Poisson para cero compras:**
+# $$\mathbb{P}(\text{0 en }\tau\mid\text{vivo})=\int_0^\infty e^{-\lambda\tau}\frac{(\alpha+T)^{r+x}\lambda^{r+x-1}e^{-(\alpha+T)\lambda}}{\Gamma(r+x)}d\lambda=\left(\frac{\alpha+T}{\alpha+T+\tau}\right)^{r+x}.$$
+#
+# Juntando,
+# $$\boxed{\mathbb{P}(Z=1\mid x,t_x,T)=\mathbb{P}(\text{vivo}\mid x,t_x,T)\left[1-\left(\frac{\alpha+T}{\alpha+T+\tau}\right)^{r+x}\right]}$$
+# Para $x=0$ el primer factor vale 1, pero el segundo es pequeño cuando
+# $r/(\alpha+T)$ — la tasa esperada a posteriori — es baja: eso arregla el
+# problema de 4.2.
+
+# %%
+pz = bgnbd.p_buy(39, P, x, tx, T)
+print(f"P(Z=1) promedio = {pz.mean():.4f}   vs. tasa real = {Z.mean():.4f}")
+print(f"Suma de P(Z=1) = {pz.sum():.1f} clientes esperados vs. {Z.sum()} reales")
+print(f"P(Z=1) para x=0: promedio {pz[x == 0].mean():.4f} (real {Z[x == 0].mean():.4f})")
+
+# %% [markdown]
+# ### 4.4 Verificación por simulación
+#
+# Simulamos 20 copias de la cohorte (47,140 clientes) con los parámetros
+# estimados y los $T$ reales, 39 semanas de calibración + 39 de *holdout*.
+# Calculamos $\mathbb{P}(Z=1)$ con la fórmula a partir de lo que cada cliente
+# simulado hizo en calibración y comparamos por deciles con la fracción que
+# efectivamente compró en el *holdout* simulado.
+
+# %%
+rng = np.random.default_rng(44)
+Trep = np.tile(T, 20)
+sx, stx, sT, sxh, svivo = bgnbd.simulate(P, Trep, rng, holdout=39)
+spz = bgnbd.p_buy(39, P, sx, stx, sT)
+spa = bgnbd.p_alive(P, sx, stx, sT)
+sZ = (sxh >= 1).astype(int)
+dec = pd.qcut(pd.Series(spz).rank(method="first"), 10, labels=range(1, 11))
+sim44 = (pd.DataFrame({"decil": dec, "fórmula P(Z=1)": spz, "simulado": sZ})
+         .groupby("decil", observed=True).mean())
+print(f"Global: fórmula = {spz.mean():.4f}, simulado = {sZ.mean():.4f}")
+print(f"P(vivo) promedio por fórmula = {spa.mean():.4f}; fracción realmente viva en T = {svivo.mean():.4f}")
+tabla(sim44.round(4), "4_4_simulacion")
+
+# %%
+fig, ax = plt.subplots(figsize=(5.5, 5))
+ax.plot([0, 1], [0, 1], "k:", lw=1)
+ax.plot(sim44["fórmula P(Z=1)"], sim44["simulado"], "C0o-")
+ax.set(xlabel="P(Z=1) por fórmula (promedio del decil)", ylabel="fracción simulada que compra",
+       title="4.4 Calibración en datos simulados")
+guardar(fig, "4_4_simulacion")
+
+# %% [markdown]
+# ### 4.5 $\mathbb{P}(Z=1)$ en los datos reales
+
+# %%
+def calib_deciles(p, z):
+    dec = pd.qcut(pd.Series(p).rank(method="first"), 10, labels=range(1, 11))
+    return (pd.DataFrame({"decil": dec, "predicho": p, "real": z})
+            .groupby("decil", observed=True).mean())
+
+
+cal45 = calib_deciles(pz, Z)
+brier_m = brier_score_loss(Z, pz)
+brier_base = brier_score_loss(Z, np.full(len(Z), Z.mean()))
+res45 = pd.DataFrame({
+    "AUC": {"P(Z=1) BG/NBD": roc_auc_score(Z, pz), "P(vivo) BG/NBD": auc_palive,
+            "recencia t_x": roc_auc_score(Z, tx), "frecuencia x": roc_auc_score(Z, x)},
+    "Brier": {"P(Z=1) BG/NBD": brier_m, "P(vivo) BG/NBD": brier_score_loss(Z, palive),
+              "recencia t_x": np.nan, "frecuencia x": np.nan},
+})
+res45.loc["tasa base para todos"] = [0.5, brier_base]
+print(f"Brier skill score vs tasa base: {1 - brier_m / brier_base:.3f}")
+tabla(res45.round(4), "4_5_metricas")
+
+# %%
+print(cal45.round(4))
+fig, ax = plt.subplots(1, 2, figsize=(12, 4.6))
+ax[0].plot([0, 1], [0, 1], "k:", lw=1)
+ax[0].plot(cal45["predicho"], cal45["real"], "C0o-", label="P(Z=1) BG/NBD")
+ax[0].set(xlabel="probabilidad predicha (promedio del decil)", ylabel="fracción real que compró",
+          title="Calibración por deciles (CDNOW)")
+ax[0].legend()
+for nombre, s in [("P(Z=1) BG/NBD", pz), ("P(vivo)", palive), ("recencia t_x", tx), ("frecuencia x", x)]:
+    fpr, tpr, _ = roc_curve(Z, s)
+    ax[1].plot(fpr, tpr, label=f"{nombre} (AUC={roc_auc_score(Z, s):.3f})")
+ax[1].plot([0, 1], [0, 1], "k:", lw=1)
+ax[1].set(xlabel="tasa de falsos positivos", ylabel="tasa de verdaderos positivos", title="Curvas ROC")
+ax[1].legend(fontsize=8)
+guardar(fig, "4_5_calibracion_roc")
+
+# %% [markdown]
+# **4.4 Respuesta.** En los datos simulados con el propio modelo, la fórmula
+# está perfectamente calibrada: en cada decil, la probabilidad promedio de la
+# fórmula y la fracción simulada que compra difieren en a lo sumo 0.013
+# (global: 0.2618 vs 0.2614). También la $P(\text{vivo})$ promedio coincide
+# con la fracción realmente viva en $T$ (0.812 vs 0.812). La fórmula de 4.3
+# está bien derivada y bien programada.
+#
+# **4.5 Respuesta.** En los datos reales:
+#
+# * **AUC:** $P(Z=1)$ = 0.757, recencia $t_x$ = 0.763, frecuencia $x$ = 0.758.
+#   Siendo honestos: **el modelo no ordena a los clientes mejor que la
+#   recencia sola** (ni que la frecuencia sola); las tres ROC están casi
+#   encimadas. Con datos tan escasos ($x$ y $t_x$ tienen muchísimos empates,
+#   60% de los clientes tienen $x=0$, $t_x=0$) hay poco margen para ordenar
+#   mejor.
+# * **Brier:** 0.161 contra 0.206 de predecir la tasa base para todos (un
+#   *skill score* de 22%). La curva de calibración sigue a la diagonal en
+#   términos generales, pero el modelo **subestima** en los deciles altos (por
+#   ejemplo 0.30 predicho vs 0.44 real en el decil 8) y en el decil más bajo
+#   (0.12 vs 0.20) — este decil son recompradores con mucho silencio a quienes
+#   el BG/NBD "mató" con demasiada confianza. Globalmente predice 26.2% vs
+#   29.0% real, coherente con el −12% del total en la Parte 3.
+#
+# **¿Qué ofrece el modelo que no ofrecen $t_x$ o $x$?** (1) **Probabilidades**,
+# no solo un orden: se puede decir "esperamos que compren 617 clientes" o
+# calcular un valor esperado de una promoción; $t_x$ no tiene unidades de
+# probabilidad. (2) **Cualquier horizonte** $\tau$ sin reentrenar nada. (3)
+# **Combinación coherente** de recencia, frecuencia y edad $T$: dos clientes
+# con el mismo $t_x$ pero distinta $x$ o distinta $T$ reciben probabilidades
+# distintas y con sentido. (4) Funciona **sin etiquetas**: se ajustó sin ver
+# un solo dato del *holdout*. (5) Además de quién compra, dice **cuánto**
+# ($E[Y(\tau)]$) y el total de la base. Si lo único que importa es un orden
+# para el mismo horizonte, la recencia es casi igual de buena y mucho más
+# barata.
+
+# %% [markdown]
