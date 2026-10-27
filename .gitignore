@@ -1,0 +1,13 @@
+.venv/
+__pycache__/
+*.pyc
+.ipynb_checkpoints/
+data/online_retail.pkl
+.DS_Store
+*.aux
+*.log
+*.nav
+*.snm
+*.toc
+*.out
+pyrightconfig.json
