@@ -899,3 +899,175 @@ print(f"Correlación de rangos (Spearman) entre P(Z=1) BG y MBG: {stats.spearman
 # las decisiones que se toman con $P(Z=1)$.
 
 # %% [markdown]
+# ---
+# ## Parte 5: Online Retail
+#
+# Usamos la función `limpiar` (misma lógica que en la tarea de series de
+# tiempo): quitamos duplicados exactos, códigos que no son productos (envío
+# `POST`/`DOT`, comisiones, ajustes, `M`anual, descuentos...), precios no
+# positivos, y conservamos las devoluciones para calcular la venta **neta**.
+# Nos quedamos con líneas con `CustomerID`. Una transacción es un día con
+# venta neta positiva de un cliente.
+
+# %%
+print(inspect.getsource(data.limpiar))
+d5, trans5 = data.retail_rfm()
+x5, tx5, T5, xs5 = (d5[c].to_numpy(float) for c in ["x", "tx", "T", "x_star"])
+hold5 = (data.RETAIL_FIN_HOLD - data.RETAIL_FIN_CAL).days / 7
+print(f"Transacciones cliente-día: {len(trans5):,}  |  cohorte de calibración: {len(d5):,} clientes")
+print(f"Holdout: {hold5:.0f} semanas;  x=0 en calibración: {(x5 == 0).mean():.3f}")
+print(d5[["x", "tx", "T", "x_star"]].describe().round(2))
+
+# %% [markdown]
+# ### 5.1 Ajuste
+
+# %%
+aj5 = bgnbd.fit(x5, tx5, T5)
+P5 = aj5["params"]
+print("Estimados BG/NBD:", dict(zip(bgnbd.PARAMS, P5.round(6))), " loglik =", round(aj5["loglik"], 3))
+print(f"¿Algún log-parámetro en la cota ±10? {aj5['en_cota']}")
+print(f"E[p] = a/(a+b) = {P5[2] / (P5[2] + P5[3]):.2e}")
+print(pd.DataFrame([np.r_[p, l] for p, l in aj5["runs"]], columns=["r", "alpha", "a", "b", "loglik"]))
+
+
+# NBD puro (nadie se muere): el BG/NBD con p = 0
+def nbd_ll(z, x, T):
+    r_, al_ = np.exp(z)
+    return np.sum(gammaln(r_ + x) - gammaln(r_) + r_ * np.log(al_) - (r_ + x) * np.log(al_ + T))
+
+
+nbd5 = minimize(lambda z: -nbd_ll(z, x5, T5), np.zeros(2), method="Nelder-Mead")
+print(f"\nNBD (sin muerte): r = {np.exp(nbd5.x[0]):.4f}, alpha = {np.exp(nbd5.x[1]):.4f}, loglik = {-nbd5.fun:.3f}")
+
+# Perfil de la verosimilitud en E[p]: fijamos la media de p y maximizamos el resto
+perfil = []
+for mp in [1e-6, 1e-3, 0.01, 0.02, 0.05, 0.1, 0.2]:
+    def nll_fijo(z, mp=mp):
+        r_, al_, phi = np.exp(z)            # phi = a + b
+        return -bgnbd.loglik([r_, al_, mp * phi, (1 - mp) * phi], x5, tx5, T5)
+    rr = min((minimize(nll_fijo, s, method="Nelder-Mead", options={"maxiter": 4000})
+              for s in [np.r_[np.log(P5[:2]), 0.0], np.r_[np.log(P5[:2]), 3.0]]), key=lambda q: q.fun)
+    perfil.append({"E[p] fijo": mp, "loglik máx": -rr.fun, "Δ vs óptimo": -rr.fun - aj5["loglik"]})
+tabla(pd.DataFrame(perfil).round(3), "5_1_perfil")
+
+# %%
+# Comparación con CDNOW de lo que vemos en los datos
+comp5 = pd.DataFrame({
+    "CDNOW": [len(d), (x == 0).mean(), x.mean(), np.median(T), (T - tx)[x > 0].mean(), np.mean(T - tx > 26)],
+    "Online Retail": [len(d5), (x5 == 0).mean(), x5.mean(), np.median(T5), (T5 - tx5)[x5 > 0].mean(),
+                      np.mean(T5 - tx5 > 26)],
+}, index=["clientes", "fracción x=0", "x medio", "T mediana (sem)", "T - t_x medio (x>0)",
+          "fracción con T - t_x > 26 sem"])
+print(comp5.round(3))
+print(f"\nClientes con primera compra en la primera semana de datos (dic-2010): "
+      f"{(d5['t0'] < 1).mean():.3f} de la cohorte; en todo diciembre 2010: {(d5['primera'] < '2011-01-01').mean():.3f}")
+print(f"Clientes con >= 10 transacciones en calibración: {(x5 >= 9).mean():.3f} (CDNOW: {(x >= 9).mean():.3f})")
+
+# %% [markdown]
+# **5.1 Respuesta.** Los estimados de $r$ y $\alpha$ son razonables
+# ($r=0.74$, $\alpha=9.17$, tasa media 0.08 compras/semana), pero **$a$ se va
+# a cero y $b$ a infinito**: $a\approx 2\times10^{-6}$ y $b\approx 9\times10^4$,
+# pegados a las cotas, y cada arranque termina en un $(a,b)$ distinto con la
+# misma log-verosimilitud. No es un optimizador perdido: es que el óptimo está
+# en la frontera. Lo que sí está bien determinado es $E[p]=a/(a+b)\approx 0$:
+# **el modelo concluye que nadie se muere**. El BG/NBD degeneró en el NBD de
+# Ehrenberg: ajustando el NBD puro (sin muerte) obtenemos exactamente los
+# mismos $r$, $\alpha$ y log-verosimilitud ($-15107.235$). El perfil de
+# verosimilitud confirma que los datos prefieren $p=0$ y que $E[p]$ de 0.01
+# apenas cuesta 1.3 unidades, mientras que un $E[p]$ como el de CDNOW (0.25)
+# sería rechazadísimo.
+#
+# **¿Por qué aquí y no en CDNOW?** Pensando en quiénes son los clientes y en
+# la ventana de observación:
+#
+# * **Son mayoristas, no consumidores.** Online Retail es una tienda del Reino
+#   Unido de artículos de regalo cuyos clientes son en gran parte negocios que
+#   reabastecen inventario con regularidad. Se comportan casi como un contrato
+#   implícito: compran cada cierto tiempo y no "desaparecen" a la primera.
+#   Hay más clientes muy frecuentes (3.7% con 10+ transacciones vs 1.4% en
+#   CDNOW).
+# * **Silencios cortos.** El BG/NBD aprende la muerte de los recompradores que
+#   llevan mucho tiempo callados ($T-t_x$ grande para su tasa). En CDNOW el
+#   silencio medio de los recompradores es 15.7 semanas y el 69% de los
+#   clientes lleva más de medio año sin comprar; en Online Retail el silencio
+#   medio es 6.2 semanas y solo 8% lleva más de 26 semanas. Sin silencios
+#   largos no hay evidencia de muerte: cualquier pausa se explica con una
+#   $\lambda$ baja.
+# * **Calibración corta y "primeras compras" falsas.** La calibración dura
+#   solo 7 meses (la mediana de $T$ es 19 semanas vs 33 en CDNOW), y los datos
+#   empiezan el 1 de diciembre de 2010: el 30% de la cohorte "aparece" en
+#   diciembre de 2010, pero muchos son clientes antiguos (en *Online Retail II*
+#   se ve que ya compraban en 2009–2010). Su "primera compra" es solo la
+#   primera en la ventana (truncamiento por la izquierda), y quien ya llevaba
+#   un año comprando es por selección un sobreviviente. CDNOW, en cambio, es
+#   una cohorte genuina de clientes nuevos, que es cuando más clientes se
+#   pierden.
+
+# %% [markdown]
+# ### 5.2 Total del *holdout*
+
+# %%
+ey5 = bgnbd.conditional_expected(hold5, P5, x5, tx5, T5)
+print(f"Holdout (1-jul a 8-dic-2011, {hold5:.0f} semanas): real = {xs5.sum():.0f}, "
+      f"BG/NBD = {ey5.sum():.1f}  (error {100 * (ey5.sum() / xs5.sum() - 1):+.1f}%)")
+
+# Serie semanal de la cohorte vs la curva bottom-up
+inicio5 = trans5["fecha"].min()
+trans5c = trans5[trans5["id"].isin(d5.index)].merge(d5[["primera"]], left_on="id", right_index=True)
+trans5c = trans5c[trans5c["fecha"] > trans5c["primera"]]
+trans5c["sem"] = (trans5c["fecha"] - inicio5).dt.days // 7 + 1
+fin_sem = (data.RETAIL_FIN_HOLD - inicio5).days // 7 + 1
+sem5 = np.arange(1, fin_sem + 1)
+real5 = trans5c.groupby("sem").size().reindex(sem5, fill_value=0)
+t05 = d5["t0"].to_numpy()
+bu5 = pd.Series([bgnbd.expected_x(k - t05, P5).sum() for k in sem5], index=sem5)
+bu5_sem = bu5.diff().fillna(bu5.iloc[0])
+sem_cal = (data.RETAIL_FIN_CAL - inicio5).days / 7
+
+# Error por mes del holdout (con E[Y] condicional acumulado a fin de cada mes)
+meses = pd.date_range("2011-07-31", "2011-11-30", freq="ME").append(pd.DatetimeIndex([data.RETAIL_FIN_HOLD]))
+filas, prev, ini = [], 0.0, data.RETAIL_FIN_CAL
+for m in meses:
+    tau = (m - data.RETAIL_FIN_CAL).days / 7
+    acum = bgnbd.conditional_expected(tau, P5, x5, tx5, T5).sum()
+    reales = trans5[(trans5["id"].isin(d5.index)) & (trans5["fecha"] > ini) & (trans5["fecha"] <= m)].shape[0]
+    filas.append({"mes": m.strftime("%Y-%m"), "real": reales, "BG/NBD": acum - prev})
+    prev, ini = acum, m
+mes5 = pd.DataFrame(filas).set_index("mes")
+mes5["error %"] = 100 * (mes5["BG/NBD"] / mes5["real"] - 1)
+tabla(mes5.round(1), "5_2_mensual")
+
+# %%
+fig, ax = plt.subplots(figsize=(12, 4))
+fechas5 = inicio5 + pd.to_timedelta((sem5 - 1) * 7, unit="D")
+ax.plot(fechas5, real5, "k", label="real (compras repetidas de la cohorte)")
+ax.plot(fechas5, bu5_sem, "C0--", label="BG/NBD bottom-up")
+ax.axvline(data.RETAIL_FIN_CAL, color="gray", ls=":")
+ax.set(title="Online Retail: compras repetidas semanales de la cohorte de calibración", ylabel="transacciones")
+ax.legend()
+guardar(fig, "5_2_online_retail")
+
+# %% [markdown]
+# **5.2 Respuesta.** El BG/NBD (que aquí es un NBD) pronostica 5,489
+# transacciones en el *holdout* contra 6,313 reales: **−13%**. Pero el error
+# no está repartido parejo. Mes a mes, el modelo pronostica una cantidad
+# casi constante (~1,050 por mes, porque nadie se muere y las tasas son
+# estacionarias): en julio y agosto **sobrepronostica** (+7% y +10%); desde
+# septiembre se queda corto, y en **noviembre se queda corto por 38%** (1,023
+# vs 1,643), y en los 8 días de diciembre por 41%.
+#
+# Esto conecta directo con lo que aprendimos de noviembre en la tarea de
+# series de tiempo: la tienda tiene un **pico estacional fortísimo en
+# octubre–noviembre**, cuando los mayoristas hacen sus pedidos para la
+# temporada navideña. El BG/NBD supone que cada cliente compra según un
+# Poisson con tasa *constante* en el tiempo: no tiene ninguna pieza de
+# estacionalidad, así que no puede anticipar el pico. Además, la calibración
+# (diciembre a junio) casi no contiene temporada alta, así que el modelo
+# tampoco la "promedia" en su tasa. El subpronóstico no se debe a que el
+# modelo mate clientes (aquí ni siquiera hay muerte); es un problema de
+# **demanda estacional**, el mismo que en la tarea hacía fallar a los
+# métodos que no tenían componente estacional. Un BTYD para este negocio
+# necesitaría una tasa que varíe con el calendario, o calibrar con al menos
+# un año completo (por ejemplo con *Online Retail II*).
+
+# %% [markdown]
