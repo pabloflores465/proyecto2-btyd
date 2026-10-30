@@ -52,7 +52,7 @@ partir del script: `python tools/py2nb.py proyecto2.py proyecto2.ipynb`.
 * **1.3 Simulación (50 semillas):** se recuperan los parámetros; r y α con CV de 4–7%, a y b de
   24–29%, porque los clientes con x = 0 no informan nada sobre la muerte.
 * **3. Bottom-up vs top-down:** el BG/NBD pronostica el *holdout* en −12% sin escoger ventanas; los
-  métodos top-down van de −50% a +32% según la ventana.
+  métodos top-down (medias, naive, drift, tendencias lineal y logarítmica) van de −50% a +53% según la ventana.
 * **4. ¿Quién sigue vivo?** P(vivo) como clasificador tiene AUC 0.32, peor que el azar, porque
   P(vivo) = 1 para todos los clientes con x = 0. La probabilidad correcta, P(Z = 1), tiene AUC 0.757,
   igual que la recencia sola (0.763), pero está calibrada (Brier 0.161 vs 0.206). El MBG/NBD da

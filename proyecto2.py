@@ -505,6 +505,13 @@ def tendencia(y, desde):
     return np.maximum(m * semanas_h + c, 0)
 
 
+def tendencia_log(y, desde):
+    # y = c + m ln(t): la serie decae cada vez más despacio
+    t = np.arange(desde, 40)
+    m, c = np.polyfit(np.log(t), y[desde - 1:], 1)
+    return np.maximum(m * np.log(semanas_h) + c, 0)
+
+
 metodos = {
     "Media histórica (sem 1-39)": np.full(h, y.mean()),
     "Media histórica (sem 13-39)": np.full(h, y[12:].mean()),
@@ -514,6 +521,9 @@ metodos = {
     "Tendencia lineal (sem 1-39)": tendencia(y, 1),
     "Tendencia lineal (sem 13-39)": tendencia(y, 13),
     "Tendencia lineal (sem 26-39)": tendencia(y, 26),
+    "Tendencia logarítmica (sem 1-39)": tendencia_log(y, 1),
+    "Tendencia logarítmica (sem 13-39)": tendencia_log(y, 13),
+    "Tendencia logarítmica (sem 26-39)": tendencia_log(y, 26),
     "Drift (sem 13-39)": np.maximum(y[-1] + (y[-1] - y[12]) / (39 - 13) * np.arange(1, h + 1), 0),
     "BG/NBD (bottom-up)": bu_sem.loc[40:78].to_numpy(),
 }
@@ -558,11 +568,15 @@ guardar(fig, "3_3_primeras_semanas")
 #   ajustada en las semanas 26–39 — tiene un MAE semanal ligeramente menor
 #   (9.3 vs 9.8) y un error total menor (−7% vs −12%) que el BG/NBD. Pero el
 #   BG/NBD es el segundo, y le gana a **todos** los demás métodos top-down.
+#   La tendencia logarítmica ($c + m \ln t$) con la ventana 26–39 queda casi
+#   empatada con la lineal (MAE 9.3) y acierta el total (−1%), pero con las
+#   otras ventanas pierde contra el BG/NBD.
 # * **Sensibilidad a la ventana:** enorme. La misma tendencia lineal da +29%
-#   con la ventana 1–39, −50% con la 13–39 y −7% con la 26–39; la media
+#   con la ventana 1–39, −50% con la 13–39 y −7% con la 26–39; la
+#   logarítmica da +53%, −22% y −1% con las mismas ventanas; la media
 #   histórica da +31%, la naive +28%, el drift −24%. Elegir la ventana
 #   "ganadora" sabiendo el resultado es hacer trampa: el 30 de septiembre no
-#   había forma de saber cuál de estas variantes, que van de −50% a +32%,
+#   había forma de saber cuál de estas variantes, que van de −50% a +53%,
 #   escoger. El BG/NBD no tiene ventanas que escoger y su error está dentro
 #   de lo que se puede esperar con 2,357 clientes.
 # * **Las primeras 12 semanas:** la cohorte **se está formando**. Los
